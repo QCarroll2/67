@@ -1,0 +1,100 @@
+pip install flask requests
+from flask import Flask, request, jsonify
+import sqlite3
+
+app = Flask(__name__)
+DB_NAME = "game.db"
+
+def init_db():
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.execute('''CREATE TABLE IF NOT EXISTS players 
+                        (username TEXT PRIMARY KEY, best_score INTEGER)''')
+    print("Database initialized.")
+
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.json
+    user = data.get('username').strip().lower()
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT best_score FROM players WHERE username = ?", (user,))
+        row = cursor.fetchone()
+        if not row:
+            cursor.execute("INSERT INTO players VALUES (?, ?)", (user, 999))
+            return jsonify({"message": "New account created!", "best": 999})
+        return jsonify({"message": "Welcome back!", "best": row[0]})
+
+@app.route('/update', methods=['POST'])
+def update():
+    data = request.json
+    user, score = data.get('username').lower(), data.get('score')
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT best_score FROM players WHERE username = ?", (user,))
+        current_best = cursor.fetchone()[0]
+        if score < current_best:
+            cursor.execute("UPDATE players SET best_score = ? WHERE username = ?", (score, user))
+            return jsonify({"status": "New High Score!"})
+    return jsonify({"status": "Score saved."})
+
+@app.route('/leaderboard', methods=['GET'])
+def leaderboard():
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT username, best_score FROM players WHERE best_score < 999 ORDER BY best_score ASC LIMIT 5")
+        rows = cursor.fetchall()
+    return jsonify([{"name": r[0], "score": r[1]} for r in rows])
+
+if __name__ == '__main__':
+    init_db()
+    app.run(host='0.0.0.0', port=5000) # Accessible on local network
+import requests
+import random
+import time
+
+SERVER_URL = "http://127.0.0.1:5000" # Change to Server's IP if playing across different PCs
+
+def play_round(username):
+    number = random.randint(1, 100)
+    attempts = 0
+    print(f"\n--- Round Started! Guess 1-100 ---")
+    
+    while True:
+        try:
+            guess = int(input("Enter guess: "))
+            attempts += 1
+            if guess < number: print("Too low!")
+            elif guess > number: print("Too high!")
+            else:
+                print(f"✨ Correct! You got it in {attempts} tries.")
+                requests.post(f"{SERVER_URL}/update", json={"username": username, "score": attempts})
+                break
+        except ValueError:
+            print("Please enter a number.")
+
+def show_leaderboard():
+    try:
+        data = requests.get(f"{SERVER_URL}/leaderboard").json()
+        print("\n🏆 GLOBAL LEADERBOARD 🏆")
+        for i, p in enumerate(data, 1):
+            print(f"{i}. {p['name']} - {p['score']} attempts")
+    except:
+        print("Could not connect to server.")
+
+def main():
+    print("Welcome to Online Number Guess!")
+    name = input("Username: ").strip()
+    if not name: return
+
+    res = requests.post(f"{SERVER_URL}/login", json={"username": name}).json()
+    print(f"{res['message']} (Your Best: {res['best']} attempts)")
+
+    while True:
+        print("\n[1] Play  [2] Leaderboard  [3] Exit")
+        choice = input("> ")
+        if choice == "1": play_round(name)
+        elif choice == "2": show_leaderboard()
+        elif choice == "3": break
+
+if __name__ == "__main__":
+    main()
