@@ -1,0 +1,99 @@
+my-online-game/
+├── server/
+│   ├── app.py          # The Flask Server
+│   └── requirements.txt # Server dependencies
+├── client/
+│   └── game.py         # The Game (for players)
+└── README.md           # Instructions for others
+import os
+from flask import Flask, request, jsonify
+import sqlite3
+
+app = Flask(__name__)
+DB_PATH = os.path.join(os.path.dirname(__file__), "game.db")
+
+def init_db():
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute('''CREATE TABLE IF NOT EXISTS players 
+                        (username TEXT PRIMARY KEY, best_score INTEGER)''')
+
+@app.route('/login', methods=['POST'])
+def login():
+    user = request.json.get('username', '').strip().lower()
+    if not user: return jsonify({"error": "No username"}), 400
+    
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT best_score FROM players WHERE username = ?", (user,))
+        row = cursor.fetchone()
+        if not row:
+            cursor.execute("INSERT INTO players VALUES (?, ?)", (user, 999))
+            return jsonify({"status": "new", "best": 999})
+        return jsonify({"status": "exists", "best": row[0]})
+
+@app.route('/leaderboard', methods=['GET'])
+def get_leaderboard():
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT username, best_score FROM players WHERE best_score < 999 ORDER BY best_score ASC LIMIT 5")
+        data = [{"name": r[0], "score": r[1]} for r in cursor.fetchall()]
+    return jsonify(data)
+
+@app.route('/score', methods=['POST'])
+def update_score():
+    data = request.json
+    user, score = data.get('username').lower(), data.get('score')
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE players SET best_score = ? WHERE username = ? AND ? < best_score", (score, user, score))
+    return jsonify({"success": True})
+
+if __name__ == '__main__':
+    init_db()
+    # Port 5000 is default, but hosts like Render/Heroku use the PORT env var
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
+import requests
+import random
+
+# When you host your server, change this to your URL (e.g., https://mygame.onrender.com)
+SERVER_URL = "http://127.0.0.1:5000"
+
+def play(username):
+    target = random.randint(1, 100)
+    attempts = 0
+    print(f"\n--- Game Started, {username}! ---")
+    
+    while True:
+        try:
+            guess = int(input("Guess (1-100): "))
+            attempts += 1
+            if guess == target:
+                print(f"🎉 You won in {attempts} tries!")
+                requests.post(f"{SERVER_URL}/score", json={"username": username, "score": attempts})
+                break
+            print("Higher" if guess < target else "Lower")
+        except ValueError: print("Enter a number!")
+
+def main():
+    user = input("Username: ").strip().lower()
+    if not user: return
+    
+    try:
+        res = requests.post(f"{SERVER_URL}/login", json={"username": user}).json()
+        print(f"Welcome! Your current best: {res['best']}")
+    except:
+        print("Server is offline. Try again later.")
+        return
+
+    while True:
+        cmd = input("\n[P]lay, [L]eaderboard, [Q]uit: ").lower()
+        if cmd == 'p': play(user)
+        elif cmd == 'l':
+            lb = requests.get(f"{SERVER_URL}/leaderboard").json()
+            print("\nTOP PLAYERS:")
+            for i, p in enumerate(lb, 1): print(f"{i}. {p['name']} - {p['score']}")
+        elif cmd == 'q': break
+
+if __name__ == "__main__":
+    main()
